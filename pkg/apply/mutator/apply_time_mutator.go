@@ -10,17 +10,18 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fluxcd/cli-utils/pkg/apply/cache"
-	"github.com/fluxcd/cli-utils/pkg/jsonpath"
-	"github.com/fluxcd/cli-utils/pkg/kstatus/status"
-	"github.com/fluxcd/cli-utils/pkg/object"
-	"github.com/fluxcd/cli-utils/pkg/object/mutation"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/klog/v2"
+
+	"github.com/fluxcd/cli-utils/pkg/apply/cache"
+	"github.com/fluxcd/cli-utils/pkg/jsonpath"
+	"github.com/fluxcd/cli-utils/pkg/kstatus/status"
+	"github.com/fluxcd/cli-utils/pkg/object"
+	"github.com/fluxcd/cli-utils/pkg/object/mutation"
 )
 
 // ApplyTimeMutator mutates an object by injecting values specified by the
@@ -229,7 +230,7 @@ func computeStatus(obj *unstructured.Unstructured) cache.ResourceStatus {
 	if err != nil {
 		if klog.V(3).Enabled() {
 			ref := mutation.ResourceReferenceFromUnstructured(obj)
-			klog.Info("failed to compute object status (%s): %d", ref, err)
+			klog.Infof("failed to compute object status (%s): %d", ref, err)
 		}
 		return cache.ResourceStatus{
 			Resource: obj,

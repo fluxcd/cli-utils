@@ -11,21 +11,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fluxcd/cli-utils/cmd/apply"
-	"github.com/fluxcd/cli-utils/cmd/destroy"
-	"github.com/fluxcd/cli-utils/cmd/diff"
-	"github.com/fluxcd/cli-utils/cmd/initcmd"
-	"github.com/fluxcd/cli-utils/cmd/preview"
-	"github.com/fluxcd/cli-utils/cmd/status"
-	"github.com/fluxcd/cli-utils/pkg/flowcontrol"
-	"github.com/fluxcd/cli-utils/pkg/inventory"
-	"github.com/fluxcd/cli-utils/pkg/manifestreader"
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/rest"
 	"k8s.io/component-base/cli"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/util"
+
+	"github.com/fluxcd/cli-utils/cmd/apply"
+	"github.com/fluxcd/cli-utils/cmd/destroy"
+	"github.com/fluxcd/cli-utils/cmd/initcmd"
+	"github.com/fluxcd/cli-utils/cmd/preview"
+	"github.com/fluxcd/cli-utils/cmd/status"
+	"github.com/fluxcd/cli-utils/pkg/flowcontrol"
+	"github.com/fluxcd/cli-utils/pkg/inventory"
+	"github.com/fluxcd/cli-utils/pkg/manifestreader"
 
 	// This is here rather than in the libraries because of
 	// https://github.com/kubernetes-sigs/kustomize/issues/2060
@@ -69,7 +69,6 @@ func main() {
 		initcmd.NewCmdInit(f, ioStreams),
 		apply.Command(f, invFactory, loader, ioStreams),
 		destroy.Command(f, invFactory, loader, ioStreams),
-		diff.NewCommand(f, ioStreams),
 		preview.Command(f, invFactory, loader, ioStreams),
 		status.Command(context.TODO(), f, invFactory, status.NewInventoryLoader(loader)),
 	}

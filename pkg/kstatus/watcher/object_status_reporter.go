@@ -11,10 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fluxcd/cli-utils/pkg/kstatus/polling/engine"
-	"github.com/fluxcd/cli-utils/pkg/kstatus/polling/event"
-	"github.com/fluxcd/cli-utils/pkg/kstatus/status"
-	"github.com/fluxcd/cli-utils/pkg/object"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -23,6 +19,11 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
+
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling/engine"
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling/event"
+	"github.com/fluxcd/cli-utils/pkg/kstatus/status"
+	"github.com/fluxcd/cli-utils/pkg/object"
 )
 
 // GroupKindNamespace identifies an informer target.
@@ -693,7 +694,7 @@ func (w *ObjectStatusReporter) newStatusCheckTaskFunc(
 	id object.ObjMetadata,
 ) taskFunc {
 	return func() {
-		klog.V(5).Infof("Re-reading object status: %s", status.ScheduleWindow, id)
+		klog.V(5).Infof("Re-reading object status: %s", id)
 		// check again
 		rs, err := w.readStatusFromCluster(ctx, id)
 		if err != nil {
