@@ -17,8 +17,8 @@ import (
 	"github.com/fluxcd/cli-utils/pkg/testutil"
 	"github.com/fluxcd/cli-utils/test/e2e/e2eutil"
 	"github.com/fluxcd/cli-utils/test/e2e/invconfig"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	. "github.com/onsi/ginkgo/v2" //nolint:revive
+	. "github.com/onsi/gomega"    //nolint:revive
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
