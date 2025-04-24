@@ -6,9 +6,10 @@ package inventory
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/fluxcd/cli-utils/pkg/apis/actuation"
 	"github.com/fluxcd/cli-utils/pkg/object"
-	"github.com/google/go-cmp/cmp"
 )
 
 func TestBuildObjMap(t *testing.T) {
@@ -65,7 +66,7 @@ func TestBuildObjMap(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			actual := buildObjMap(tc.objSet, tc.objStatus)
 			if diff := cmp.Diff(actual, tc.expected); diff != "" {
-				t.Errorf(diff)
+				t.Error(diff)
 			}
 		})
 	}

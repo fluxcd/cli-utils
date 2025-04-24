@@ -8,9 +8,10 @@ import (
 	"io"
 	"time"
 
-	"github.com/fluxcd/cli-utils/pkg/print/common"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/integer"
+
+	"github.com/fluxcd/cli-utils/pkg/print/common"
 )
 
 // ColumnDef is an implementation of the ColumnDefinition interface.
@@ -111,7 +112,7 @@ var (
 				color, setColor := common.ColorForStatus(rs.Status)
 				var outputStatus string
 				if setColor {
-					outputStatus = common.SprintfWithColor(color, s)
+					outputStatus = common.SprintfWithColor(color, "%s", s)
 				} else {
 					outputStatus = s
 				}
@@ -160,7 +161,7 @@ var (
 					if len(conditionType) > remainingWidth {
 						conditionType = conditionType[:remainingWidth]
 					}
-					_, err := fmt.Fprint(w, common.SprintfWithColor(color, conditionType))
+					_, err := fmt.Fprint(w, common.SprintfWithColor(color, "%s", conditionType))
 					if err != nil {
 						return realLength, err
 					}
