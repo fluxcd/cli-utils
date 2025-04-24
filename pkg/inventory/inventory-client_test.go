@@ -7,9 +7,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/fluxcd/cli-utils/pkg/apis/actuation"
-	"github.com/fluxcd/cli-utils/pkg/common"
-	"github.com/fluxcd/cli-utils/pkg/object"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,6 +17,10 @@ import (
 	"k8s.io/cli-runtime/pkg/resource"
 	clienttesting "k8s.io/client-go/testing"
 	cmdtesting "k8s.io/kubectl/pkg/cmd/testing"
+
+	"github.com/fluxcd/cli-utils/pkg/apis/actuation"
+	"github.com/fluxcd/cli-utils/pkg/common"
+	"github.com/fluxcd/cli-utils/pkg/object"
 )
 
 func podStatus(info *resource.Info) actuation.ObjectStatus {
@@ -411,7 +412,7 @@ func TestReplace(t *testing.T) {
 				t.Fatalf("unexpected error received: %s", err)
 			}
 			if diff := cmp.Diff(data, tc.data); diff != "" {
-				t.Fatalf(diff)
+				t.Fatal(diff)
 			}
 		})
 	}
