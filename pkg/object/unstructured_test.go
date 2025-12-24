@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	cmdtesting "k8s.io/kubectl/pkg/cmd/testing"
 
-	. "github.com/fluxcd/cli-utils/pkg/object"
+	. "github.com/fluxcd/cli-utils/pkg/object" //nolint:revive
 	"github.com/fluxcd/cli-utils/pkg/testutil"
 )
 
