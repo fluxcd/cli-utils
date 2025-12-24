@@ -108,15 +108,15 @@ func deepCopyRESTConfig(from, to *rest.Config) {
 		to.ExecProvider.Config = from.ExecProvider.Config.DeepCopyObject()
 	}
 	to.TLSClientConfig = rest.TLSClientConfig{
-		Insecure:   from.TLSClientConfig.Insecure,
-		ServerName: from.TLSClientConfig.ServerName,
-		CertFile:   from.TLSClientConfig.CertFile,
-		KeyFile:    from.TLSClientConfig.KeyFile,
-		CAFile:     from.TLSClientConfig.CAFile,
-		CertData:   from.TLSClientConfig.CertData,
-		KeyData:    from.TLSClientConfig.KeyData,
-		CAData:     from.TLSClientConfig.CAData,
-		NextProtos: from.TLSClientConfig.NextProtos,
+		Insecure:   from.Insecure,
+		ServerName: from.ServerName,
+		CertFile:   from.CertFile,
+		KeyFile:    from.KeyFile,
+		CAFile:     from.CAFile,
+		CertData:   from.CertData,
+		KeyData:    from.KeyData,
+		CAData:     from.CAData,
+		NextProtos: from.NextProtos,
 	}
 	to.UserAgent = from.UserAgent
 	to.DisableCompression = from.DisableCompression
