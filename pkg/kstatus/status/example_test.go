@@ -95,3 +95,59 @@ status:
 
 	assert.Equal(t, expectedManifest, receivedManifest)
 }
+
+func TestExampleStringObservedGeneration(t *testing.T) {
+	deploymentManifest := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+   name: test
+   generation: 1
+   namespace: qual
+status:
+   observedGeneration: "1"
+   updatedReplicas: 1
+   readyReplicas: 1
+   availableReplicas: 1
+   replicas: 1
+   conditions:
+    - type: Progressing
+      status: "True"
+      reason: NewReplicaSetAvailable
+    - type: Available
+      status: "True"
+`
+	deployment := testutil.YamlToUnstructured(t, deploymentManifest)
+
+	res, err := status.Compute(deployment)
+	assert.NoError(t, err)
+
+	assert.Equal(t, status.Status("Current"), res.Status)
+}
+
+func TestExampleStringObservedGenerationBad(t *testing.T) {
+	deploymentManifest := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+   name: test
+   generation: 1
+   namespace: qual
+status:
+   observedGeneration: "foo"
+   updatedReplicas: 1
+   readyReplicas: 1
+   availableReplicas: 1
+   replicas: 1
+   conditions:
+    - type: Progressing
+      status: "True"
+      reason: NewReplicaSetAvailable
+    - type: Available
+      status: "True"
+`
+	deployment := testutil.YamlToUnstructured(t, deploymentManifest)
+
+	_, err := status.Compute(deployment)
+	assert.Error(t, err)
+}

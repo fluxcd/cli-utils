@@ -5,6 +5,7 @@ package status
 
 import (
 	"fmt"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -81,7 +82,17 @@ func checkGeneration(u *unstructured.Unstructured) (*Result, error) {
 	}
 	observedGeneration, found, err := unstructured.NestedInt64(u.Object, "status", "observedGeneration")
 	if err != nil {
-		return nil, fmt.Errorf("looking up status.observedGeneration from resource: %w", err)
+		// Last ditch to see if observedGeneration is a string.  If so, convert to int64.
+		strObservedGeneration, found, err := unstructured.NestedString(u.Object, "status", "observedGeneration")
+		if err != nil {
+			return nil, fmt.Errorf("looking up status.observedGeneration from resource: %w", err)
+		}
+		if found {
+			observedGeneration, err = strconv.ParseInt(strObservedGeneration, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("looking up status.observedGeneration from resource: %w", err)
+			}
+		}
 	}
 	if found {
 		// Resource does not have this field, so we can't do this check.
