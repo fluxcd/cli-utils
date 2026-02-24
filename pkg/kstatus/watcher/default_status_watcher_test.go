@@ -5,13 +5,17 @@ package watcher
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling/engine"
 	"github.com/fluxcd/cli-utils/pkg/kstatus/polling/event"
 	"github.com/fluxcd/cli-utils/pkg/kstatus/status"
 	"github.com/fluxcd/cli-utils/pkg/object"
 	"github.com/fluxcd/cli-utils/pkg/testutil"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
@@ -887,4 +891,151 @@ func getGVR(t *testing.T, mapper meta.RESTMapper, obj *unstructured.Unstructured
 	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	require.NoError(t, err)
 	return mapping.Resource
+}
+
+// slowStatusReader simulates a StatusReader that takes a fixed amount of time
+// to compute status, mimicking the synchronous API calls made by the real
+// deployment/replicaset status readers when fetching generated resources.
+type slowStatusReader struct {
+	delay       time.Duration
+	inFlight    int64
+	maxInFlight int64
+}
+
+func (s *slowStatusReader) Supports(schema.GroupKind) bool {
+	return true
+}
+
+func (s *slowStatusReader) ReadStatus(ctx context.Context, _ engine.ClusterReader, id object.ObjMetadata) (*event.ResourceStatus, error) {
+	s.trackStart()
+	defer s.trackDone()
+
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return &event.ResourceStatus{
+		Identifier: id,
+		Status:     status.CurrentStatus,
+		Message:    "Current",
+	}, nil
+}
+
+func (s *slowStatusReader) ReadStatusForObject(ctx context.Context, _ engine.ClusterReader, obj *unstructured.Unstructured) (*event.ResourceStatus, error) {
+	s.trackStart()
+	defer s.trackDone()
+
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	id := object.UnstructuredToObjMetadata(obj)
+	return &event.ResourceStatus{
+		Identifier: id,
+		Status:     status.CurrentStatus,
+		Resource:   obj,
+		Message:    "Current",
+	}, nil
+}
+
+func (s *slowStatusReader) trackStart() {
+	current := atomic.AddInt64(&s.inFlight, 1)
+	for {
+		max := atomic.LoadInt64(&s.maxInFlight)
+		if current <= max || atomic.CompareAndSwapInt64(&s.maxInFlight, max, current) {
+			return
+		}
+	}
+}
+
+func (s *slowStatusReader) trackDone() {
+	atomic.AddInt64(&s.inFlight, -1)
+}
+
+// TestEventHandlerConcurrency verifies that the informer event handler does not
+// block the entire notification pipeline when status computation is slow.
+//
+// When multiple objects share the same informer (same GroupKind + namespace),
+// events should be processed concurrently rather than serially. With serial
+// processing, N objects each taking D time would result in ~N*D total latency.
+// With concurrent processing, total latency should be close to D.
+//
+// This test will FAIL before the fix (serial handler) and PASS after (async handler).
+func TestEventHandlerConcurrency(t *testing.T) {
+	const numPods = 10
+	const statusDelay = 100 * time.Millisecond
+
+	fakeMapper := testutil.NewFakeRESTMapper(
+		v1.SchemeGroupVersion.WithKind("Pod"),
+	)
+
+	pods := make([]*unstructured.Unstructured, numPods)
+	ids := make(object.ObjMetadataSet, numPods)
+	for i := 0; i < numPods; i++ {
+		pod := &unstructured.Unstructured{}
+		pod.SetGroupVersionKind(v1.SchemeGroupVersion.WithKind("Pod"))
+		pod.SetNamespace("default")
+		pod.SetName(fmt.Sprintf("pod-%d", i))
+		pods[i] = pod
+		ids[i] = object.UnstructuredToObjMetadata(pod)
+	}
+
+	podGVR := getGVR(t, fakeMapper, pods[0])
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	fakeClient := dynamicfake.NewSimpleDynamicClient(scheme.Scheme)
+
+	statusWatcher := NewDefaultStatusWatcher(fakeClient, fakeMapper)
+	reader := &slowStatusReader{delay: statusDelay}
+	statusWatcher.StatusReader = reader
+
+	eventCh := statusWatcher.Watch(ctx, ids, Options{})
+
+	// Wait for the SyncEvent indicating the informer has started watching.
+	syncReceived := false
+	for e := range eventCh {
+		if e.Type == event.SyncEvent {
+			syncReceived = true
+			break
+		}
+	}
+	require.True(t, syncReceived, "expected SyncEvent before any resource events")
+
+	// Create all pods at once to queue up events in the informer.
+	for _, pod := range pods {
+		require.NoError(t, fakeClient.Tracker().Create(podGVR, pod.DeepCopy(), pod.GetNamespace()))
+	}
+
+	// Collect all ResourceUpdateEvents and measure total elapsed time.
+	start := time.Now()
+	received := 0
+	for received < numPods {
+		select {
+		case e, ok := <-eventCh:
+			if !ok {
+				t.Fatalf("event channel closed after receiving %d/%d events", received, numPods)
+			}
+			if e.Type == event.ResourceUpdateEvent {
+				received++
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for events: received %d/%d", received, numPods)
+		}
+	}
+	elapsed := time.Since(start)
+	cancel()
+
+	serialTime := time.Duration(numPods) * statusDelay
+	t.Logf("Received %d events in %v (serial estimate: %v)", numPods, elapsed, serialTime)
+	assert.Greater(t, atomic.LoadInt64(&reader.maxInFlight), int64(1),
+		"expected overlapping status computations, got max in-flight=%d",
+		atomic.LoadInt64(&reader.maxInFlight))
+
+	assert.Less(t, elapsed, serialTime*3/4,
+		"event handler appears too close to serial processing: took %v, expected under %v",
+		elapsed, serialTime*3/4)
 }
