@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	fakecr "github.com/fluxcd/cli-utils/pkg/kstatus/polling/clusterreader/fake"
 	"github.com/fluxcd/cli-utils/pkg/kstatus/polling/engine"
@@ -16,7 +17,9 @@ import (
 	fakemapper "github.com/fluxcd/cli-utils/pkg/testutil"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -67,7 +70,120 @@ func TestPodControllerStatusReader(t *testing.T) {
 					Status: status.InProgressStatus,
 				},
 				{
-					Status: status.FailedStatus,
+					Status:   status.FailedStatus,
+					Resource: newPodWithPhase("failed-pod", namespace, corev1.PodFailed),
+				},
+			},
+			expectedIdentifier: object.ObjMetadata{
+				GroupKind: rsGVK.GroupKind(),
+				Name:      name,
+				Namespace: namespace,
+			},
+			expectedStatus: status.FailedStatus,
+		},
+		"pending unschedulable pod does not cause failure": {
+			computeStatusResult: &status.Result{
+				Status:  status.InProgressStatus,
+				Message: "this is a test",
+			},
+			genResourceStatuses: event.ResourceStatuses{
+				{
+					Status:   status.FailedStatus,
+					Resource: newUnschedulablePod("pending-pod", namespace),
+				},
+			},
+			expectedIdentifier: object.ObjMetadata{
+				GroupKind: rsGVK.GroupKind(),
+				Name:      name,
+				Namespace: namespace,
+			},
+			expectedStatus: status.InProgressStatus,
+		},
+		"pending pod without unschedulable condition causes failure": {
+			computeStatusResult: &status.Result{
+				Status:  status.InProgressStatus,
+				Message: "this is a test",
+			},
+			genResourceStatuses: event.ResourceStatuses{
+				{
+					Status:   status.FailedStatus,
+					Resource: newPodWithPhase("pending-pod", namespace, corev1.PodPending),
+				},
+			},
+			expectedIdentifier: object.ObjMetadata{
+				GroupKind: rsGVK.GroupKind(),
+				Name:      name,
+				Namespace: namespace,
+			},
+			expectedStatus: status.FailedStatus,
+		},
+		"deleted pod does not cause failure": {
+			computeStatusResult: &status.Result{
+				Status:  status.InProgressStatus,
+				Message: "this is a test",
+			},
+			genResourceStatuses: event.ResourceStatuses{
+				{
+					Status:   status.FailedStatus,
+					Resource: newDeletingPod("deleting-pod", namespace),
+				},
+			},
+			expectedIdentifier: object.ObjMetadata{
+				GroupKind: rsGVK.GroupKind(),
+				Name:      name,
+				Namespace: namespace,
+			},
+			expectedStatus: status.InProgressStatus,
+		},
+		"mix of transient and terminal pod failures causes failure": {
+			computeStatusResult: &status.Result{
+				Status:  status.InProgressStatus,
+				Message: "this is a test",
+			},
+			genResourceStatuses: event.ResourceStatuses{
+				{
+					Status:   status.FailedStatus,
+					Resource: newUnschedulablePod("pending-pod", namespace),
+				},
+				{
+					Status:   status.FailedStatus,
+					Resource: newPodWithPhase("crashed-pod", namespace, corev1.PodFailed),
+				},
+			},
+			expectedIdentifier: object.ObjMetadata{
+				GroupKind: rsGVK.GroupKind(),
+				Name:      name,
+				Namespace: namespace,
+			},
+			expectedStatus: status.FailedStatus,
+		},
+		"failed pod with nil resource does not cause failure": {
+			computeStatusResult: &status.Result{
+				Status:  status.InProgressStatus,
+				Message: "this is a test",
+			},
+			genResourceStatuses: event.ResourceStatuses{
+				{
+					Status:   status.FailedStatus,
+					Resource: nil,
+				},
+			},
+			expectedIdentifier: object.ObjMetadata{
+				GroupKind: rsGVK.GroupKind(),
+				Name:      name,
+				Namespace: namespace,
+			},
+			expectedStatus: status.InProgressStatus,
+		},
+		"running pod with crash loop causes failure": {
+			computeStatusResult: &status.Result{
+				Status:  status.InProgressStatus,
+				Message: "this is a test",
+			},
+			genResourceStatuses: event.ResourceStatuses{
+				{
+					Status:   status.FailedStatus,
+					Resource: newPodWithPhase("crashloop-pod", namespace, corev1.PodRunning),
 				},
 			},
 			expectedIdentifier: object.ObjMetadata{
@@ -103,6 +219,33 @@ func TestPodControllerStatusReader(t *testing.T) {
 			assert.Equal(t, tc.expectedStatus, resourceStatus.Status)
 		})
 	}
+}
+
+func newPodWithPhase(name, namespace string, phase corev1.PodPhase) *unstructured.Unstructured {
+	pod := &unstructured.Unstructured{}
+	pod.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "Pod"})
+	pod.SetName(name)
+	pod.SetNamespace(namespace)
+	_ = unstructured.SetNestedField(pod.Object, string(phase), "status", "phase")
+	return pod
+}
+
+func newUnschedulablePod(name, namespace string) *unstructured.Unstructured {
+	pod := newPodWithPhase(name, namespace, corev1.PodPending)
+	_ = unstructured.SetNestedSlice(pod.Object, []interface{}{
+		map[string]interface{}{
+			"type":   string(corev1.PodScheduled),
+			"status": string(corev1.ConditionFalse),
+			"reason": corev1.PodReasonUnschedulable,
+		},
+	}, "status", "conditions")
+	return pod
+}
+
+func newDeletingPod(name, namespace string) *unstructured.Unstructured {
+	pod := newPodWithPhase(name, namespace, corev1.PodRunning)
+	pod.SetDeletionTimestamp(&metav1.Time{Time: time.Now()})
+	return pod
 }
 
 func fakeStatusForGenResourcesFunc(resourceStatuses event.ResourceStatuses, err error) statusForGenResourcesFunc {
