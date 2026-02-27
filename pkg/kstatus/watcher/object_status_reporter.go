@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -86,6 +87,12 @@ type ObjectStatusReporter struct {
 	// controllers that aren't following status conventions.
 	ClusterReader engine.ClusterReader
 
+	// StatusComputeWorkers is the maximum number of concurrent goroutines
+	// used to compute object status per informer. Status computation may
+	// involve synchronous API calls (e.g., fetching generated resources),
+	// so this bounds the number of concurrent API calls. Defaults to 8.
+	StatusComputeWorkers int
+
 	// GroupKinds is the list of GroupKinds to watch.
 	Targets []GroupKindNamespace
 
@@ -120,9 +127,6 @@ type ObjectStatusReporter struct {
 	// allowing input channels to be added and removed at runtime.
 	funnel *eventFunnel
 
-	// taskManager makes it possible to cancel scheduled tasks.
-	taskManager *taskManager
-
 	started bool
 	stopped bool
 }
@@ -134,8 +138,6 @@ func (w *ObjectStatusReporter) Start(ctx context.Context) <-chan event.Event {
 	if w.started {
 		panic("ObjectStatusInformer cannot be restarted")
 	}
-
-	w.taskManager = &taskManager{}
 
 	// Map GroupKinds to sets of GroupKindNamespaces for fast lookups.
 	// This is the only time we modify the map.
@@ -303,7 +305,7 @@ func (w *ObjectStatusReporter) startInformerWithRetry(ctx context.Context, gkn G
 				return
 			}
 			// Send error event and stop the reporter!
-			w.handleFatalError(eventCh, err)
+			w.handleFatalError(ctx, eventCh, err)
 			return
 		}
 		// Success! - Stop retrying
@@ -341,10 +343,17 @@ func (w *ObjectStatusReporter) startInformerNow(
 		return fmt.Errorf("informer failed to build event handler: %w", err)
 	}
 
+	var fatalErrorOnce sync.Once
+	onFatal := func(err error) {
+		fatalErrorOnce.Do(func() {
+			w.handleFatalError(ctx, eventCh, err)
+		})
+	}
+
 	// Handler called when ListAndWatch errors.
 	// Custom handler stops the informer if the resource is NotFound (CRD deleted).
 	err = informer.SetWatchErrorHandler(func(r *cache.Reflector, err error) {
-		w.watchErrorHandler(gkn, eventCh, err)
+		w.watchErrorHandler(gkn, onFatal, err)
 	})
 	if err != nil {
 		// Should never happen.
@@ -352,7 +361,17 @@ func (w *ObjectStatusReporter) startInformerNow(
 		return fmt.Errorf("failed to set error handler on new informer for %v: %v", mapping.Resource, err)
 	}
 
-	_, err = informer.AddEventHandler(w.eventHandler(ctx, eventCh))
+	workers := w.StatusComputeWorkers
+	if workers <= 0 {
+		workers = 8
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, workers)
+	var latestEventSeqs sync.Map
+	var nextEventSeq atomic.Uint64
+	tasks := &taskManager{}
+
+	_, err = informer.AddEventHandler(w.eventHandler(ctx, eventCh, &wg, sem, &latestEventSeqs, &nextEventSeq, tasks, onFatal))
 	if err != nil {
 		// Should never happen.
 		return fmt.Errorf("failed add event handler on new informer for %v: %v", mapping.Resource, err)
@@ -364,6 +383,16 @@ func (w *ObjectStatusReporter) startInformerNow(
 		klog.V(3).Infof("Watch starting: %v", gkn)
 		informer.Run(ctx.Done())
 		klog.V(3).Infof("Watch stopped: %v", gkn)
+		// Cancel any scheduled re-checks tied to this informer.
+		tasks.CancelAll()
+		// Wait for all in-flight status computations to finish before
+		// closing the event channel, to avoid send-on-closed-channel panics.
+		wg.Wait()
+		// Cancel again to catch tasks that were scheduled late by goroutines
+		// that completed after the first cancellation pass.
+		tasks.CancelAll()
+		// Wait for all scheduled task goroutines to exit before closing.
+		tasks.Wait()
 		// Signal to the caller there will be no more events for this GroupKind.
 		close(eventCh)
 	}()
@@ -429,15 +458,29 @@ func deletedStatus(id object.ObjMetadata) *event.ResourceStatus {
 }
 
 // eventHandler builds an event handler to compute object status.
-// Returns an event channel on which these stats updates will be reported.
+//
+// Status computation (which may involve synchronous API calls) is dispatched
+// to goroutines bounded by the semaphore, so the informer notification
+// pipeline is never blocked. A per-informer monotonic sequence counter assigns
+// an event sequence number to each object event; goroutines that finish after a
+// newer sequence has been observed for the same object will detect staleness
+// and drop their result.
+//
+// NOTE: per-object "latest event wins" behavior is preserved, but events for
+// different objects may be observed out-of-order compared to informer arrival.
 func (w *ObjectStatusReporter) eventHandler(
 	ctx context.Context,
 	eventCh chan<- event.Event,
+	wg *sync.WaitGroup,
+	sem chan struct{},
+	latestEventSeqs *sync.Map,
+	nextEventSeq *atomic.Uint64,
+	taskManager *taskManager,
+	onFatal func(error),
 ) cache.ResourceEventHandler {
 	var handler cache.ResourceEventHandlerFuncs
 
 	handler.AddFunc = func(iobj interface{}) {
-		// Bail early if the context is cancelled, to avoid unnecessary work.
 		if ctx.Err() != nil {
 			return
 		}
@@ -453,15 +496,8 @@ func (w *ObjectStatusReporter) eventHandler(
 		}
 		klog.V(5).Infof("AddFunc: Computing status for object: %s", id)
 
-		// cancel any scheduled status update for this object
-		w.taskManager.Cancel(id)
-
-		rs, err := w.readStatusFromObject(ctx, obj)
-		if err != nil {
-			// Send error event and stop the reporter!
-			w.handleFatalError(eventCh, fmt.Errorf("failed to compute object status: %s: %w", id, err))
-			return
-		}
+		// Cancel any scheduled status update for this object.
+		taskManager.Cancel(id)
 
 		if object.IsNamespace(obj) {
 			klog.V(5).Infof("AddFunc: Namespace added: %v", id)
@@ -471,22 +507,12 @@ func (w *ObjectStatusReporter) eventHandler(
 			w.onCRDAdd(obj)
 		}
 
-		if isObjectUnschedulable(rs) {
-			klog.V(5).Infof("AddFunc: object unschedulable: %v", id)
-			// schedule delayed status update
-			w.taskManager.Schedule(ctx, id, status.ScheduleWindow,
-				w.newStatusCheckTaskFunc(ctx, eventCh, id))
-		}
-
-		klog.V(7).Infof("AddFunc: sending update event: %v", rs)
-		eventCh <- event.Event{
-			Type:     event.ResourceUpdateEvent,
-			Resource: rs,
-		}
+		eventSeq := nextEventSeq.Add(1)
+		latestEventSeqs.Store(id, eventSeq)
+		w.asyncComputeStatus(ctx, eventCh, wg, sem, latestEventSeqs, taskManager, id, obj, eventSeq, "AddFunc", onFatal)
 	}
 
 	handler.UpdateFunc = func(_, iobj interface{}) {
-		// Bail early if the context is cancelled, to avoid unnecessary work.
 		if ctx.Err() != nil {
 			return
 		}
@@ -502,15 +528,8 @@ func (w *ObjectStatusReporter) eventHandler(
 		}
 		klog.V(5).Infof("UpdateFunc: Computing status for object: %s", id)
 
-		// cancel any scheduled status update for this object
-		w.taskManager.Cancel(id)
-
-		rs, err := w.readStatusFromObject(ctx, obj)
-		if err != nil {
-			// Send error event and stop the reporter!
-			w.handleFatalError(eventCh, fmt.Errorf("failed to compute object status: %s: %w", id, err))
-			return
-		}
+		// Cancel any scheduled status update for this object.
+		taskManager.Cancel(id)
 
 		if object.IsNamespace(obj) {
 			klog.V(5).Infof("UpdateFunc: Namespace updated: %v", id)
@@ -520,29 +539,19 @@ func (w *ObjectStatusReporter) eventHandler(
 			w.onCRDUpdate(obj)
 		}
 
-		if isObjectUnschedulable(rs) {
-			klog.V(5).Infof("UpdateFunc: object unschedulable: %v", id)
-			// schedule delayed status update
-			w.taskManager.Schedule(ctx, id, status.ScheduleWindow,
-				w.newStatusCheckTaskFunc(ctx, eventCh, id))
-		}
-
-		klog.V(7).Infof("UpdateFunc: sending update event: %v", rs)
-		eventCh <- event.Event{
-			Type:     event.ResourceUpdateEvent,
-			Resource: rs,
-		}
+		eventSeq := nextEventSeq.Add(1)
+		latestEventSeqs.Store(id, eventSeq)
+		w.asyncComputeStatus(ctx, eventCh, wg, sem, latestEventSeqs, taskManager, id, obj, eventSeq, "UpdateFunc", onFatal)
 	}
 
 	handler.DeleteFunc = func(iobj interface{}) {
-		// Bail early if the context is cancelled, to avoid unnecessary work.
 		if ctx.Err() != nil {
 			return
 		}
 
 		if tombstone, ok := iobj.(cache.DeletedFinalStateUnknown); ok {
 			// Last state unknown. Possibly stale.
-			// TODO: Should we propegate this uncertainty to the caller?
+			// TODO: Should we propagate this uncertainty to the caller?
 			iobj = tombstone.Obj
 		}
 		obj, ok := iobj.(*unstructured.Unstructured)
@@ -556,8 +565,12 @@ func (w *ObjectStatusReporter) eventHandler(
 		}
 		klog.V(5).Infof("DeleteFunc: Computing status for object: %s", id)
 
-		// cancel any scheduled status update for this object
-		w.taskManager.Cancel(id)
+		// Cancel any scheduled status update for this object.
+		taskManager.Cancel(id)
+
+		// Invalidate any in-flight async status computations for this object.
+		nextEventSeq.Add(1)
+		latestEventSeqs.Delete(id)
 
 		if object.IsNamespace(obj) {
 			klog.V(5).Infof("DeleteFunc: Namespace deleted: %v", id)
@@ -569,13 +582,114 @@ func (w *ObjectStatusReporter) eventHandler(
 
 		rs := deletedStatus(id)
 		klog.V(7).Infof("DeleteFunc: sending update event: %v", rs)
-		eventCh <- event.Event{
+		select {
+		case <-ctx.Done():
+			return
+		case eventCh <- event.Event{
 			Type:     event.ResourceUpdateEvent,
 			Resource: rs,
+		}:
 		}
 	}
 
 	return handler
+}
+
+func (w *ObjectStatusReporter) asyncComputeStatus(
+	ctx context.Context,
+	eventCh chan<- event.Event,
+	wg *sync.WaitGroup,
+	sem chan struct{},
+	latestEventSeqs *sync.Map,
+	taskManager *taskManager,
+	id object.ObjMetadata,
+	obj *unstructured.Unstructured,
+	eventSeq uint64,
+	handlerName string,
+	onFatal func(error),
+) {
+	objCopy := obj.DeepCopy()
+
+	// We launch one goroutine per informer event and bound active work with sem.
+	// This favors simple informer integration over a full worker-pool lifecycle.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		case <-ctx.Done():
+			return
+		}
+
+		// Bail early if the context is cancelled, to avoid unnecessary work.
+		if ctx.Err() != nil {
+			return
+		}
+
+		rs, err := w.readStatusFromObject(ctx, objCopy)
+		if err != nil {
+			onFatal(fmt.Errorf("failed to compute object status: %s: %w", id, err))
+			return
+		}
+
+		// Drop stale events before scheduling delayed re-checks.
+		if !isLatestEventSequence(latestEventSeqs, id, eventSeq) {
+			if cur, ok := latestEventSeqs.Load(id); ok {
+				klog.V(7).Infof("%s: skipping stale event for %v (seq=%d, latest=%v)", handlerName, id, eventSeq, cur)
+			} else {
+				klog.V(7).Infof("%s: skipping stale event for %v (seq=%d, latest=<deleted>)", handlerName, id, eventSeq)
+			}
+			return
+		}
+
+		scheduled := false
+		if isObjectUnschedulable(rs) {
+			klog.V(5).Infof("%s: object unschedulable: %v", handlerName, id)
+			taskManager.Schedule(ctx, id, status.ScheduleWindow,
+				w.newStatusCheckTaskFunc(ctx, eventCh, id, onFatal))
+			scheduled = true
+		}
+
+		// Re-check staleness after scheduling to avoid orphaned delayed tasks.
+		if !isLatestEventSequence(latestEventSeqs, id, eventSeq) {
+			if scheduled {
+				taskManager.Cancel(id)
+			}
+			if cur, ok := latestEventSeqs.Load(id); ok {
+				klog.V(7).Infof("%s: skipping stale event for %v after scheduling (seq=%d, latest=%v)", handlerName, id, eventSeq, cur)
+			} else {
+				klog.V(7).Infof("%s: skipping stale event for %v after scheduling (seq=%d, latest=<deleted>)", handlerName, id, eventSeq)
+			}
+			return
+		}
+
+		// There is still a narrow TOCTOU window between this stale check and
+		// the send where a delete can race; watcher events are eventually
+		// consistent and consumers should treat a later NotFound as authoritative.
+		klog.V(7).Infof("%s: sending update event: %v", handlerName, rs)
+		select {
+		case <-ctx.Done():
+			return
+		case eventCh <- event.Event{
+			Type:     event.ResourceUpdateEvent,
+			Resource: rs,
+		}:
+		}
+	}()
+}
+
+func isLatestEventSequence(latestEventSeqs *sync.Map, id object.ObjMetadata, eventSeq uint64) bool {
+	cur, ok := latestEventSeqs.Load(id)
+	if !ok {
+		return false
+	}
+	currentSeq, ok := cur.(uint64)
+	if !ok {
+		return false
+	}
+	return currentSeq == eventSeq
 }
 
 // onCRDAdd handles creating a new informer to watch the new resource type.
@@ -692,6 +806,7 @@ func (w *ObjectStatusReporter) newStatusCheckTaskFunc(
 	ctx context.Context,
 	eventCh chan<- event.Event,
 	id object.ObjMetadata,
+	onFatal func(error),
 ) taskFunc {
 	return func() {
 		klog.V(5).Infof("Re-reading object status: %s", id)
@@ -700,24 +815,32 @@ func (w *ObjectStatusReporter) newStatusCheckTaskFunc(
 		if err != nil {
 			// Send error event and stop the reporter!
 			// TODO: retry N times before terminating
-			w.handleFatalError(eventCh, err)
+			onFatal(err)
 			return
 		}
-		eventCh <- event.Event{
+		select {
+		case <-ctx.Done():
+			return
+		case eventCh <- event.Event{
 			Type:     event.ResourceUpdateEvent,
 			Resource: rs,
+		}:
 		}
 	}
 }
 
-func (w *ObjectStatusReporter) handleFatalError(eventCh chan<- event.Event, err error) {
+func (w *ObjectStatusReporter) handleFatalError(ctx context.Context, eventCh chan<- event.Event, err error) {
 	klog.V(5).Infof("Reporter error: %v", err)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
-	eventCh <- event.Event{
+	select {
+	case <-ctx.Done():
+		return
+	case eventCh <- event.Event{
 		Type:  event.ErrorEvent,
 		Error: err,
+	}:
 	}
 	w.Stop()
 }
@@ -725,7 +848,7 @@ func (w *ObjectStatusReporter) handleFatalError(eventCh chan<- event.Event, err 
 // watchErrorHandler logs errors and cancels the informer for this GroupKind
 // if the NotFound error is received, which usually means the CRD was deleted.
 // Based on DefaultWatchErrorHandler from k8s.io/client-go@v0.23.2/tools/cache/reflector.go
-func (w *ObjectStatusReporter) watchErrorHandler(gkn GroupKindNamespace, eventCh chan<- event.Event, err error) {
+func (w *ObjectStatusReporter) watchErrorHandler(gkn GroupKindNamespace, onFatal func(error), err error) {
 	switch {
 	// Stop channel closed
 	case err == io.EOF:
@@ -758,7 +881,7 @@ func (w *ObjectStatusReporter) watchErrorHandler(gkn GroupKindNamespace, eventCh
 	// Insufficient permissions
 	case apierrors.IsForbidden(err):
 		klog.V(3).Infof("ListAndWatch error (termination expected): %v: stopping all informers: %v", gkn, err)
-		w.handleFatalError(eventCh, err)
+		onFatal(err)
 
 	// Unexpected error
 	default:
@@ -838,11 +961,16 @@ func (ir *informerReference) Stop() {
 
 type taskFunc func()
 
+type scheduledTask struct {
+	cancel context.CancelFunc
+}
+
 // taskManager manages a set of tasks with object identifiers.
 // This makes starting and stopping the tasks thread-safe.
 type taskManager struct {
 	lock        sync.Mutex
-	cancelFuncs map[object.ObjMetadata]context.CancelFunc
+	wg          sync.WaitGroup
+	cancelFuncs map[object.ObjMetadata]*scheduledTask
 }
 
 func (tm *taskManager) Schedule(parentCtx context.Context, id object.ObjMetadata, delay time.Duration, task taskFunc) {
@@ -850,19 +978,24 @@ func (tm *taskManager) Schedule(parentCtx context.Context, id object.ObjMetadata
 	defer tm.lock.Unlock()
 
 	if tm.cancelFuncs == nil {
-		tm.cancelFuncs = make(map[object.ObjMetadata]context.CancelFunc)
+		tm.cancelFuncs = make(map[object.ObjMetadata]*scheduledTask)
 	}
 
-	cancel, found := tm.cancelFuncs[id]
+	taskRef, found := tm.cancelFuncs[id]
 	if found {
 		// Cancel the existing scheduled task and replace it.
-		cancel()
+		taskRef.cancel()
 	}
 
 	taskCtx, cancel := context.WithTimeout(context.Background(), delay)
-	tm.cancelFuncs[id] = cancel
+	taskRef = &scheduledTask{cancel: cancel}
+	tm.cancelFuncs[id] = taskRef
+	tm.wg.Add(1)
 
-	go func() {
+	go func(taskRef *scheduledTask) {
+		defer tm.wg.Done()
+		defer tm.removeIfCurrent(id, taskRef)
+
 		klog.V(5).Infof("Task scheduled (%v) for object (%s)", delay, id)
 		select {
 		case <-parentCtx.Done():
@@ -875,20 +1008,59 @@ func (tm *taskManager) Schedule(parentCtx context.Context, id object.ObjMetadata
 			}
 			// else stop waiting
 		}
-	}()
+	}(taskRef)
 }
 
 func (tm *taskManager) Cancel(id object.ObjMetadata) {
 	tm.lock.Lock()
 	defer tm.lock.Unlock()
 
-	cancelFunc, found := tm.cancelFuncs[id]
+	taskRef, found := tm.cancelFuncs[id]
 	if !found {
 		// already cancelled or not added
 		return
 	}
 	delete(tm.cancelFuncs, id)
-	cancelFunc()
+	taskRef.cancel()
+	if len(tm.cancelFuncs) == 0 {
+		tm.cancelFuncs = nil
+	}
+}
+
+func (tm *taskManager) CancelAll() {
+	tm.lock.Lock()
+	if len(tm.cancelFuncs) == 0 {
+		tm.lock.Unlock()
+		return
+	}
+
+	taskRefs := make([]*scheduledTask, 0, len(tm.cancelFuncs))
+	for id, taskRef := range tm.cancelFuncs {
+		taskRefs = append(taskRefs, taskRef)
+		delete(tm.cancelFuncs, id)
+	}
+	tm.cancelFuncs = nil
+	tm.lock.Unlock()
+
+	for _, taskRef := range taskRefs {
+		taskRef.cancel()
+	}
+}
+
+func (tm *taskManager) Wait() {
+	tm.wg.Wait()
+}
+
+func (tm *taskManager) removeIfCurrent(id object.ObjMetadata, taskRef *scheduledTask) {
+	tm.lock.Lock()
+	defer tm.lock.Unlock()
+
+	current, found := tm.cancelFuncs[id]
+	if !found || current != taskRef {
+		return
+	}
+
+	delete(tm.cancelFuncs, id)
 	if len(tm.cancelFuncs) == 0 {
 		tm.cancelFuncs = nil
 	}
