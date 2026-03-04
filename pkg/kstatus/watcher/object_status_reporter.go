@@ -89,7 +89,9 @@ type ObjectStatusReporter struct {
 	// StatusComputeWorkers is the maximum number of concurrent goroutines
 	// used to compute object status per informer. Status computation may
 	// involve synchronous API calls (e.g., fetching generated resources),
-	// so this bounds the number of concurrent API calls. Defaults to 8.
+	// so this bounds the number of concurrent API calls.
+	// When <= 1 (default), status is computed synchronously in the handler.
+	// Set to a higher value (e.g., 8) to enable concurrent status computation.
 	StatusComputeWorkers int
 
 	// GroupKinds is the list of GroupKinds to watch.
@@ -359,31 +361,47 @@ func (w *ObjectStatusReporter) startInformerNow(
 	}
 
 	workers := w.StatusComputeWorkers
-	if workers <= 0 {
-		workers = 8
-	}
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, workers)
-	var latestRVs sync.Map
 
-	_, err = informer.AddEventHandler(w.eventHandler(ctx, eventCh, &wg, sem, &latestRVs))
-	if err != nil {
-		// Should never happen.
-		return fmt.Errorf("failed add event handler on new informer for %v: %v", mapping.Resource, err)
-	}
+	if workers > 1 {
+		// Async path: dispatch status computation to bounded goroutines.
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, workers)
+		var latestRVs sync.Map
 
-	// Start the informer in the background.
-	// Informer will be stopped when the context is cancelled.
-	go func() {
-		klog.V(3).Infof("Watch starting: %v", gkn)
-		informer.Run(ctx.Done())
-		klog.V(3).Infof("Watch stopped: %v", gkn)
-		// Wait for all in-flight status computations to finish before
-		// closing the event channel, to avoid send-on-closed-channel panics.
-		wg.Wait()
-		// Signal to the caller there will be no more events for this GroupKind.
-		close(eventCh)
-	}()
+		_, err = informer.AddEventHandler(w.asyncEventHandler(ctx, eventCh, &wg, sem, &latestRVs))
+		if err != nil {
+			// Should never happen.
+			return fmt.Errorf("failed add event handler on new informer for %v: %v", mapping.Resource, err)
+		}
+
+		// Start the informer in the background.
+		// Informer will be stopped when the context is cancelled.
+		go func() {
+			klog.V(3).Infof("Watch starting: %v", gkn)
+			informer.Run(ctx.Done())
+			klog.V(3).Infof("Watch stopped: %v", gkn)
+			// Wait for all in-flight status computations to finish before
+			// closing the event channel, to avoid send-on-closed-channel panics.
+			wg.Wait()
+			// Signal to the caller there will be no more events for this GroupKind.
+			close(eventCh)
+		}()
+	} else {
+		// Sync path (default): process events inline in the informer handler.
+		// This preserves the original serial behavior for backward compatibility.
+		_, err = informer.AddEventHandler(w.syncEventHandler(ctx, eventCh))
+		if err != nil {
+			// Should never happen.
+			return fmt.Errorf("failed add event handler on new informer for %v: %v", mapping.Resource, err)
+		}
+
+		go func() {
+			klog.V(3).Infof("Watch starting: %v", gkn)
+			informer.Run(ctx.Done())
+			klog.V(3).Infof("Watch stopped: %v", gkn)
+			close(eventCh)
+		}()
+	}
 
 	return nil
 }
@@ -445,14 +463,165 @@ func deletedStatus(id object.ObjMetadata) *event.ResourceStatus {
 	}
 }
 
-// eventHandler builds an event handler to compute object status.
+// syncEventHandler builds an event handler that computes object status
+// synchronously in the informer handler. This is the original behavior,
+// used when StatusComputeWorkers <= 1.
+func (w *ObjectStatusReporter) syncEventHandler(
+	ctx context.Context,
+	eventCh chan<- event.Event,
+) cache.ResourceEventHandler {
+	var handler cache.ResourceEventHandlerFuncs
+
+	handler.AddFunc = func(iobj interface{}) {
+		// Bail early if the context is cancelled, to avoid unnecessary work.
+		if ctx.Err() != nil {
+			return
+		}
+
+		obj, ok := iobj.(*unstructured.Unstructured)
+		if !ok {
+			panic(fmt.Sprintf("AddFunc received unexpected object type %T", iobj))
+		}
+		id := object.UnstructuredToObjMetadata(obj)
+		if w.ObjectFilter.Filter(obj) {
+			klog.V(7).Infof("Watch Event Skipped: AddFunc: %s", id)
+			return
+		}
+		klog.V(5).Infof("AddFunc: Computing status for object: %s", id)
+
+		// cancel any scheduled status update for this object
+		w.taskManager.Cancel(id)
+
+		rs, err := w.readStatusFromObject(ctx, obj)
+		if err != nil {
+			// Send error event and stop the reporter!
+			w.handleFatalError(eventCh, fmt.Errorf("failed to compute object status: %s: %w", id, err))
+			return
+		}
+
+		if object.IsNamespace(obj) {
+			klog.V(5).Infof("AddFunc: Namespace added: %v", id)
+			w.onNamespaceAdd(obj)
+		} else if object.IsCRD(obj) {
+			klog.V(5).Infof("AddFunc: CRD added: %v", id)
+			w.onCRDAdd(obj)
+		}
+
+		if isObjectUnschedulable(rs) {
+			klog.V(5).Infof("AddFunc: object unschedulable: %v", id)
+			// schedule delayed status update
+			w.taskManager.Schedule(ctx, id, status.ScheduleWindow,
+				w.newStatusCheckTaskFunc(ctx, eventCh, id))
+		}
+
+		klog.V(7).Infof("AddFunc: sending update event: %v", rs)
+		eventCh <- event.Event{
+			Type:     event.ResourceUpdateEvent,
+			Resource: rs,
+		}
+	}
+
+	handler.UpdateFunc = func(_, iobj interface{}) {
+		// Bail early if the context is cancelled, to avoid unnecessary work.
+		if ctx.Err() != nil {
+			return
+		}
+
+		obj, ok := iobj.(*unstructured.Unstructured)
+		if !ok {
+			panic(fmt.Sprintf("UpdateFunc received unexpected object type %T", iobj))
+		}
+		id := object.UnstructuredToObjMetadata(obj)
+		if w.ObjectFilter.Filter(obj) {
+			klog.V(7).Infof("UpdateFunc: Watch Event Skipped: %s", id)
+			return
+		}
+		klog.V(5).Infof("UpdateFunc: Computing status for object: %s", id)
+
+		// cancel any scheduled status update for this object
+		w.taskManager.Cancel(id)
+
+		rs, err := w.readStatusFromObject(ctx, obj)
+		if err != nil {
+			// Send error event and stop the reporter!
+			w.handleFatalError(eventCh, fmt.Errorf("failed to compute object status: %s: %w", id, err))
+			return
+		}
+
+		if object.IsNamespace(obj) {
+			klog.V(5).Infof("UpdateFunc: Namespace updated: %v", id)
+			w.onNamespaceUpdate(obj)
+		} else if object.IsCRD(obj) {
+			klog.V(5).Infof("UpdateFunc: CRD updated: %v", id)
+			w.onCRDUpdate(obj)
+		}
+
+		if isObjectUnschedulable(rs) {
+			klog.V(5).Infof("UpdateFunc: object unschedulable: %v", id)
+			// schedule delayed status update
+			w.taskManager.Schedule(ctx, id, status.ScheduleWindow,
+				w.newStatusCheckTaskFunc(ctx, eventCh, id))
+		}
+
+		klog.V(7).Infof("UpdateFunc: sending update event: %v", rs)
+		eventCh <- event.Event{
+			Type:     event.ResourceUpdateEvent,
+			Resource: rs,
+		}
+	}
+
+	handler.DeleteFunc = func(iobj interface{}) {
+		// Bail early if the context is cancelled, to avoid unnecessary work.
+		if ctx.Err() != nil {
+			return
+		}
+
+		if tombstone, ok := iobj.(cache.DeletedFinalStateUnknown); ok {
+			// Last state unknown. Possibly stale.
+			// TODO: Should we propagate this uncertainty to the caller?
+			iobj = tombstone.Obj
+		}
+		obj, ok := iobj.(*unstructured.Unstructured)
+		if !ok {
+			panic(fmt.Sprintf("DeleteFunc received unexpected object type %T", iobj))
+		}
+		id := object.UnstructuredToObjMetadata(obj)
+		if w.ObjectFilter.Filter(obj) {
+			klog.V(7).Infof("DeleteFunc: Watch Event Skipped: %s", id)
+			return
+		}
+		klog.V(5).Infof("DeleteFunc: Computing status for object: %s", id)
+
+		// cancel any scheduled status update for this object
+		w.taskManager.Cancel(id)
+
+		if object.IsNamespace(obj) {
+			klog.V(5).Infof("DeleteFunc: Namespace deleted: %v", id)
+			w.onNamespaceDelete(obj)
+		} else if object.IsCRD(obj) {
+			klog.V(5).Infof("DeleteFunc: CRD deleted: %v", id)
+			w.onCRDDelete(obj)
+		}
+
+		rs := deletedStatus(id)
+		klog.V(7).Infof("DeleteFunc: sending update event: %v", rs)
+		eventCh <- event.Event{
+			Type:     event.ResourceUpdateEvent,
+			Resource: rs,
+		}
+	}
+
+	return handler
+}
+
+// asyncEventHandler builds an event handler that dispatches status computation
+// to bounded goroutines, so the informer notification pipeline is never blocked.
+// Used when StatusComputeWorkers > 1.
 //
-// Status computation (which may involve synchronous API calls) is dispatched
-// to goroutines bounded by the semaphore, so the informer notification
-// pipeline is never blocked. A latestRVs map tracks the most recent resource
-// version per object; goroutines that finish after a newer event has arrived
-// for the same object will detect staleness and drop their result.
-func (w *ObjectStatusReporter) eventHandler(
+// A latestRVs map tracks the most recent resource version per object;
+// goroutines that finish after a newer event has arrived for the same object
+// will detect staleness and drop their result.
+func (w *ObjectStatusReporter) asyncEventHandler(
 	ctx context.Context,
 	eventCh chan<- event.Event,
 	wg *sync.WaitGroup,

@@ -968,6 +968,7 @@ func TestEventHandlerConcurrency(t *testing.T) {
 
 	statusWatcher := NewDefaultStatusWatcher(fakeClient, fakeMapper)
 	statusWatcher.StatusReader = &slowStatusReader{delay: statusDelay}
+	statusWatcher.StatusComputeWorkers = 8
 
 	eventCh := statusWatcher.Watch(ctx, ids, Options{})
 

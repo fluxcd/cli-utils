@@ -45,7 +45,11 @@ type DefaultStatusWatcher struct {
 	ClusterReader engine.ClusterReader
 
 	// StatusComputeWorkers is the maximum number of concurrent goroutines
-	// used to compute object status per informer. Defaults to 8.
+	// used to compute object status per informer. When set to a value > 1,
+	// status computation is dispatched to async goroutines, preventing the
+	// informer notification pipeline from being blocked by slow API calls.
+	// Defaults to 0 (synchronous, same as original behavior).
+	// Set to a higher value (e.g., 8) to enable concurrent status computation.
 	StatusComputeWorkers int
 }
 
