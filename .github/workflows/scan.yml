@@ -1,16 +1,12 @@
-name: test
+name: scan
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  schedule:
+    - cron: '0 6 * * 1'
 
 jobs:
-  test:
+  govulncheck:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,12 +20,5 @@ jobs:
           cache-dependency-path: |
             **/go.sum
             **/go.mod
-      - name: Test
-        run: make
-      - name: Check if working tree is dirty
-        run: |
-          if [[ $(git diff --stat) != '' ]]; then
-            git diff
-            echo 'run make and commit changes'
-            exit 1
-          fi
+      - name: Scan
+        run: make scan

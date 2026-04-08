@@ -3,6 +3,7 @@
 [![release](https://img.shields.io/github/v/tag/fluxcd/cli-utils?label=release)](https://github.com/fluxcd/cli-utils/tags)
 [![license](https://img.shields.io/github/license/fluxcd/cli-utils.svg)](https://github.com/fluxcd/cli-utils/blob/main/LICENSE)
 [![test](https://github.com/fluxcd/cli-utils/workflows/test/badge.svg)](https://github.com/fluxcd/cli-utils/actions)
+[![scan](https://github.com/fluxcd/cli-utils/workflows/scan/badge.svg)](https://github.com/fluxcd/cli-utils/actions)
 
 This repository is a hard fork of [kubernetes-sigs/cli-utils](https://github.com/kubernetes-sigs/cli-utils) reducing it to the `kstatus` package
 and adding extensions for Flux's use cases.

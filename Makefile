@@ -15,27 +15,33 @@ SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
 .PHONY: all
-all: tidy vet fmt lint test
+all: tidy vet fmt lint test ## Run the full verification pipeline (tidy, vet, fmt, lint, test).
+
+##@ Development
 
 .PHONY: fmt
-fmt:
+fmt: ## Format Go source files in-place with gofmt.
 	go fmt ./...
 
 .PHONY: lint
-lint: golangci-lint ## Run golangci linters and ESLint.
+lint: golangci-lint ## Run golangci-lint against the whole module.
 	$(GOLANGCI_LINT) run
 
 .PHONY: tidy
-tidy:
+tidy: ## Sync go.mod and go.sum with the module's imports.
 	go mod tidy
 
 .PHONY: test
-test:
+test: ## Run unit tests under ./pkg/... with the race detector and coverage enabled.
 	go test -race -cover ./pkg/...
 
 .PHONY: vet
-vet:
+vet: ## Run go vet to catch suspicious constructs.
 	go vet ./...
+
+.PHONY: scan
+scan: govulncheck ## Scan the module for known vulnerabilities.
+	@$(GOVULNCHECK) ./...
 
 ##@ Dependencies
 
@@ -48,6 +54,7 @@ $(LOCALBIN):
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 GOVULNCHECK ?= $(LOCALBIN)/govulncheck
 
+# Pinned version of golangci-lint; bump here to upgrade the linter across CI and local runs.
 GOLANGCI_LINT_VERSION ?= v2.11.4
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
@@ -55,10 +62,9 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
 .PHONY: govulncheck
-govulncheck: $(GOVULNCHECK) ## Run govulncheck.
+govulncheck: $(GOVULNCHECK) ## Install govulncheck locally if necessary.
 $(GOVULNCHECK): $(LOCALBIN)
 	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,latest)
-	@$(GOVULNCHECK) ./...
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary (ideally with version)
