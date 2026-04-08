@@ -1,139 +1,81 @@
-# Copyright 2019 The Kubernetes Authors.
+# Copyright 2026 The Flux Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-GOPATH := $(shell go env GOPATH)
-MYGOBIN := $(shell go env GOPATH)/bin
-SHELL := /bin/bash
-export PATH := $(MYGOBIN):$(PATH)
+# Get the currently used golang install path
+# (in GOPATH/bin, unless GOBIN is set).
+ifeq (,$(shell go env GOBIN))
+GOBIN=$(shell go env GOPATH)/bin
+else
+GOBIN=$(shell go env GOBIN)
+endif
+
+# Setting SHELL to bash allows bash commands to be executed by recipes.
+# Options are set to exit when a recipe line exits non-zero or a piped command fails.
+SHELL = /usr/bin/env bash -o pipefail
+.SHELLFLAGS = -ec
 
 .PHONY: all
-all: generate license fix vet fmt test lint tidy
-
-"$(MYGOBIN)/stringer":
-	go install golang.org/x/tools/cmd/stringer@v0.12.0
-
-"$(MYGOBIN)/addlicense":
-	go install github.com/google/addlicense@v1.0.0
-
-"$(MYGOBIN)/golangci-lint":
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.2
-
-"$(MYGOBIN)/deepcopy-gen":
-	go install k8s.io/code-generator/cmd/deepcopy-gen@v0.25.2
-
-"$(MYGOBIN)/ginkgo":
-	go install github.com/onsi/ginkgo/v2/ginkgo@v2.2.0
-
-"$(MYGOBIN)/mdrip":
-	go install github.com/monopole/mdrip@v1.0.2
-
-"$(MYGOBIN)/kind":
-	go install sigs.k8s.io/kind@v0.16.0
-
-# The following target intended for reference by a file in
-# https://github.com/kubernetes/test-infra/tree/master/config/jobs/kubernetes-sigs/cli-utils
-.PHONY: prow-presubmit-check
-prow-presubmit-check: \
-	test lint verify-license
-
-.PHONY: prow-presubmit-check-e2e
-prow-presubmit-check-e2e: \
-	install-column-apt test-e2e verify-kapply-e2e
-
-.PHONY: prow-presubmit-check-stress
-prow-presubmit-check-stress: \
-	test-stress
-
-.PHONY: fix
-fix:
-	go fix ./...
+all: tidy vet fmt lint test
 
 .PHONY: fmt
 fmt:
 	go fmt ./...
 
-# Install column (required by verify-kapply-e2e)
-# Update is included because the kubekins-e2e container build strips out the package cache.
-# In newer versions of debian, column is in the bsdextrautils package,
-# but in buster (used by kubekins-e2e) it's in bsdmainutils.
-.PHONY: install-column-apt
-install-column-apt:
-	apt-get update
-	apt-get install -y bsdmainutils
-
-.PHONY: generate-deepcopy
-generate-deepcopy: "$(MYGOBIN)/deepcopy-gen"
-	hack/run-in-gopath.sh deepcopy-gen --input-dirs ./pkg/apis/... -O zz_generated.deepcopy --go-header-file ./LICENSE_TEMPLATE_GO
-
-.PHONY: generate
-generate: "$(MYGOBIN)/stringer" generate-deepcopy
-	go generate ./...
-
-.PHONY: license
-license: "$(MYGOBIN)/addlicense"
-	"$(MYGOBIN)/addlicense" -v -y 2021 -c "The Kubernetes Authors." -f LICENSE_TEMPLATE .
-
-.PHONY: verify-license
-verify-license: "$(MYGOBIN)/addlicense"
-	"$(MYGOBIN)/addlicense" -check .
+.PHONY: lint
+lint: golangci-lint ## Run golangci linters and ESLint.
+	$(GOLANGCI_LINT) run
 
 .PHONY: tidy
 tidy:
 	go mod tidy
 
-.PHONY: lint
-lint: "$(MYGOBIN)/golangci-lint"
-	"$(MYGOBIN)/golangci-lint" run ./...
-
 .PHONY: test
 test:
-	go test -race -cover ./cmd/... ./pkg/...
-
-.PHONY: test-e2e
-test-e2e: "$(MYGOBIN)/ginkgo" "$(MYGOBIN)/kind"
-	kind delete cluster --name=cli-utils-e2e && kind create cluster --name=cli-utils-e2e --wait 5m
-	"$(MYGOBIN)/ginkgo" -v ./test/e2e/... -- -v 3
-
-.PHONY: test-e2e-focus
-test-e2e-focus: "$(MYGOBIN)/ginkgo" "$(MYGOBIN)/kind"
-	kind delete cluster --name=cli-utils-e2e && kind create cluster --name=cli-utils-e2e --wait 5m
-	"$(MYGOBIN)"/ginkgo -v -focus ".*$(FOCUS).*" ./test/e2e/... -- -v 5
-
-.PHONY: test-stress
-test-stress: "$(MYGOBIN)/ginkgo" "$(MYGOBIN)/kind"
-	kind delete cluster --name=cli-utils-e2e && kind create cluster --name=cli-utils-e2e --wait 5m \
-		--config=./test/stress/kind-cluster.yaml
-	kubectl wait nodes --for=condition=ready --all --timeout=5m
-	"$(MYGOBIN)/ginkgo" -v ./test/stress/... -- -v 3
+	go test -race -cover ./pkg/...
 
 .PHONY: vet
 vet:
 	go vet ./...
 
-.PHONY: build
-build:
-	go build -o bin/kapply github.com/fluxcd/cli-utils/cmd;
-	mv bin/kapply "$(MYGOBIN)"
+##@ Dependencies
 
-.PHONY: build-with-race-detector
-build-with-race-detector:
-	go build -race -o bin/kapply github.com/fluxcd/cli-utils/cmd;
-	mv bin/kapply "$(MYGOBIN)"
+## Location to install dependencies to
+LOCALBIN ?= $(shell pwd)/bin
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
 
-.PHONY: verify-kapply-e2e
-verify-kapply-e2e: test-examples-e2e-kapply
+## Tool Binaries
+GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+GOVULNCHECK ?= $(LOCALBIN)/govulncheck
 
-.PHONY: test-examples-e2e-kapply
-test-examples-e2e-kapply: "$(MYGOBIN)/mdrip" "$(MYGOBIN)/kind"
-	( \
-		set -e; \
-		/bin/rm -f bin/kapply; \
-		/bin/rm -f "$(MYGOBIN)/kapply"; \
-		echo "Installing kapply from ."; \
-		make build-with-race-detector; \
-		./hack/testExamplesE2EAgainstKapply.sh .; \
-	)
+GOLANGCI_LINT_VERSION ?= v2.11.4
+.PHONY: golangci-lint
+golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
+$(GOLANGCI_LINT): $(LOCALBIN)
+	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
-.PHONY: nuke
-nuke:
-	sudo rm -rf "$(GOPATH)/pkg/mod/sigs.k8s.io"
+.PHONY: govulncheck
+govulncheck: $(GOVULNCHECK) ## Run govulncheck.
+$(GOVULNCHECK): $(LOCALBIN)
+	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,latest)
+	@$(GOVULNCHECK) ./...
+
+# go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
+# $1 - target path with name of binary (ideally with version)
+# $2 - package url which can be installed
+# $3 - specific version of package
+define go-install-tool
+@[ -f $(1) ] || { \
+set -e; \
+package=$(2)@$(3) ;\
+echo "Downloading $${package}" ;\
+GOBIN=$(LOCALBIN) go install $${package} ;\
+mv "$$(echo "$(1)" | sed "s/-$(3)$$//")" $(1) ;\
+}
+endef
+
+##@ General
+
+.PHONY: help
+help: ## Display this help.
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
