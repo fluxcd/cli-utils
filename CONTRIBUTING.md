@@ -1,68 +1,68 @@
-# Contributing Guidelines
+# Contributing
 
-Welcome to Kubernetes. We are excited about the prospect of you joining our [community](https://git.k8s.io/community)! The Kubernetes community abides by the CNCF [code of conduct](code-of-conduct.md). Here is an excerpt:
+This project is [Apache 2.0 licensed](LICENSE) and accepts contributions
+via GitHub pull requests. This document outlines some of the conventions on
+to make it easier to get your contribution accepted.
 
-_As contributors and maintainers of this project, and in the interest of fostering an open and welcoming community, we pledge to respect all people who contribute through reporting issues, posting feature requests, updating documentation, submitting pull requests or patches, and other activities._
+We gratefully welcome improvements to issues and documentation as well as to
+code.
 
-## Getting Started
+## Certificate of Origin
 
-We have full documentation on how to get started contributing here:
+By contributing to this project you agree to the Developer Certificate of
+Origin (DCO). This document was created by the Linux Kernel community and is a
+simple statement that you, as a contributor, have the legal right to make the
+contribution. No action from you is required, but it's a good idea to see the
+[DCO](DCO) file for details before you start contributing code to FluxCD
+pkg.
 
-<!---
-If your repo has certain guidelines for contribution, put them here ahead of the general k8s resources
--->
+## Communications
 
-- [Contributor License Agreement](https://git.k8s.io/community/CLA.md) Kubernetes projects require that you sign a Contributor License Agreement (CLA) before we can accept your pull requests
-- [Kubernetes Contributor Guide](https://git.k8s.io/community/contributors/guide) - Main contributor documentation, or you can just jump directly to the [contributing section](https://git.k8s.io/community/contributors/guide#contributing)
-- [Contributor Cheat Sheet](https://git.k8s.io/community/contributors/guide/contributor-cheatsheet/README.md) - Common resources for existing developers
+The project uses Slack: To join the conversation, simply join the
+[CNCF](https://slack.cncf.io/) Slack workspace and use the
+[#flux](https://cloud-native.slack.com/messages/flux/) channel.
 
-## Mentorship
+The developers use a mailing list to discuss development as well.
+Simply subscribe to [flux-dev on cncf.io](https://lists.cncf.io/g/cncf-flux-dev)
+to join the conversation (this will also add an invitation to your
+Google calendar for our [Flux
+meeting](https://docs.google.com/document/d/1l_M0om0qUEN_NNiGgpqJ2tvsF2iioHkaARDeh6b70B0/edit#)).
 
-- [Mentoring Initiatives](https://git.k8s.io/community/mentoring) - We have a diverse set of mentorship programs available that are always looking for volunteers!
+### How to run the test suite
 
-## Contact Information
+You can run the unit tests by simply doing
 
-- [Slack channel](https://kubernetes.slack.com/messages/sig-cli)
-- [Mailing list](https://groups.google.com/forum/#!forum/kubernetes-sig-cli)
+```bash
+make test
+```
 
-## Setup a Dev Environment
+## Acceptance policy
 
-- install [go](https://golang.org/doc/install)
-- `export GO111MODULE=on`
-- install [wire](https://github.com/google/wire/)
+These things will make a PR more likely to be accepted:
 
-## Build and Test
+- a well-described requirement
+- tests for new code
+- tests for old code!
+- new code and tests follow the conventions in old code and tests
+- a good commit message (see below)
+- all code must abide [Go Code Review Comments](https://github.com/golang/go/wiki/CodeReviewComments)
+- names should abide [What's in a name](https://talks.golang.org/2014/names.slide#1)
+- code must build on both Linux and Darwin, via plain `go build`
+- code should have appropriate test coverage and tests should be written
+  to work with `go test`
 
-1. `go generate`
-  - Generates the `wire_gen.go` files
-1. `go test ./...`
-  - Test the
-1. `golint -min_confidence 0.9 ./...`
-  - Look for errors
-1. `go build`
-  - Build the binary
+In general, we will merge a PR once one maintainer has endorsed it.
+For substantial changes, more people may become involved, and you might
+get asked to resubmit the PR or divide the changes into more than one PR.
 
-## Dependency Injection
+### Format of the Commit Message
 
-This repo uses Dependency Injection for wiring together the Commands.  See the
-[wire tutorial](https://github.com/google/wire/tree/master/_tutorial) for more on DI.
+For Source Controller we prefer the following rules for good commit messages:
 
-## Adding a Command
+- Limit the subject to 50 characters and write as the continuation
+  of the sentence "If applied, this commit will ..."
+- Explain what and why in the body, if more than a trivial change;
+  wrap it at 72 characters.
 
-1. Add a new package for your cobra command under `cmd/`
-  - e.g. `kubectl apply status` would be added under `cmd/apply/status`
-  - Add it to the parent command
-  - Copy an existing command as an example
-1. Add a new package that contains the library for your command under `internal/pkg`
-  - e.g. `kubectl apply status` library would be added under `internal/pkg/status`
-  - Invoke it from the command you added
-  - Copy an existing package as an example
-1. Add the DI wiring for your library
-  - Edit `internal/pkg/wiring/wiring.go` - Add your struct to the `ProviderSet` list
-  - Edit `internal/pkg/wiring/wire.go` - Add an `Initialize` function for you struct
-
-## Adding a Library (non-internal)
-
-1. Add a new package for your library under `pkg`
-1. Add a new package that contains the implementation under `internal/pkg`
-  - Invoke it from your public package
+The [following article](https://chris.beams.io/posts/git-commit/#seven-rules)
+has some more helpful advice on documenting your work.
