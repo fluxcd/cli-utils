@@ -4,7 +4,8 @@
 [![license](https://img.shields.io/github/license/fluxcd/cli-utils.svg)](https://github.com/fluxcd/cli-utils/blob/main/LICENSE)
 [![test](https://github.com/fluxcd/cli-utils/workflows/test/badge.svg)](https://github.com/fluxcd/cli-utils/actions)
 
-This repository is a hard fork of [kubernetes-sigs/cli-utils](https://github.com/kubernetes-sigs/cli-utils).
+This repository is a hard fork of [kubernetes-sigs/cli-utils](https://github.com/kubernetes-sigs/cli-utils) reducing it to the `kstatus` package
+and adding extensions for Flux's use cases.
 
 We've forked `cli-utils` in 2023 as the upstream repo lagged months behind Kubernetes & Kustomize,
 which [blocked](https://github.com/fluxcd/flux2/issues/3564) our ability to use the latest Kustomize features in Flux.
