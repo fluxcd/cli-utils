@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/fluxcd/cli-utils/pkg/object"
-	"github.com/fluxcd/cli-utils/pkg/object/dependson"
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -130,33 +129,5 @@ func (a deleteOwningInvMutator) Mutate(u *unstructured.Unstructured) {
 		}
 	} else {
 		unstructured.RemoveNestedField(u.Object, "metadata", "annotations")
-	}
-}
-
-// AddDependsOn returns a testutil.Mutator which adds the passed objects as a
-// depends-on annotation to the object which is mutated. Multiple objects
-// passed in means multiple depends on objects in the annotation separated
-// by a comma.
-func AddDependsOn(t *testing.T, deps ...object.ObjMetadata) Mutator {
-	return dependsOnMutator{
-		t:    t,
-		deps: dependson.DependencySet(deps),
-	}
-}
-
-// dependsOnMutator encapsulates fields for adding depends-on annotation
-// to a test object. Implements the Mutator interface.
-type dependsOnMutator struct {
-	t    *testing.T
-	deps dependson.DependencySet
-}
-
-// Mutate writes a depends-on annotation on the supplied object. The value of
-// the annotation is a set of dependencies referencing the dependsOnMutator's
-// depObjs.
-func (d dependsOnMutator) Mutate(u *unstructured.Unstructured) {
-	err := dependson.WriteAnnotation(u, d.deps)
-	if !assert.NoError(d.t, err) {
-		d.t.FailNow()
 	}
 }
