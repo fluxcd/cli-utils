@@ -97,10 +97,29 @@ func TestParseObjMetadata(t *testing.T) {
 			inventory: &ObjMetadata{},
 			isError:   true,
 		},
-		"Too many fields": {
-			invStr:    "test-namespace_test-name_apps_foo_Deployment",
-			inventory: &ObjMetadata{},
-			isError:   true,
+		"Name can contain underscores": {
+			invStr: "test-namespace_test_name_apps_Deployment",
+			inventory: &ObjMetadata{
+				Namespace: "test-namespace",
+				Name:      "test_name",
+				GroupKind: schema.GroupKind{
+					Group: "apps",
+					Kind:  "Deployment",
+				},
+			},
+			isError: false,
+		},
+		"Name can contain multiple underscores": {
+			invStr: "test-namespace_test_name_with_underscores_apps_Deployment",
+			inventory: &ObjMetadata{
+				Namespace: "test-namespace",
+				Name:      "test_name_with_underscores",
+				GroupKind: schema.GroupKind{
+					Group: "apps",
+					Kind:  "Deployment",
+				},
+			},
+			isError: false,
 		},
 	}
 
