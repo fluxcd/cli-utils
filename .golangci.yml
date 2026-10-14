@@ -25,6 +25,10 @@ linters:
   settings:
     dupl:
       threshold: 400
+    goconst:
+      exclude-types:
+        - Call
+        - CompositeLit
     gocyclo:
       min-complexity: 30
     lll:
