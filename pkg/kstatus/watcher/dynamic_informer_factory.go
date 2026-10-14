@@ -38,12 +38,12 @@ func (f *DynamicInformerFactory) NewInformer(ctx context.Context, mapping *meta.
 	example.SetGroupVersionKind(mapping.GroupVersionKind)
 
 	lw := &cache.ListWatch{
-		ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+		ListWithContextFunc: func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error) {
 			return f.Client.Resource(mapping.Resource).
 				Namespace(namespace).
 				List(ctx, options)
 		},
-		WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+		WatchFuncWithContext: func(ctx context.Context, options metav1.ListOptions) (watch.Interface, error) {
 			return f.Client.Resource(mapping.Resource).
 				Namespace(namespace).
 				Watch(ctx, options)
