@@ -15,7 +15,7 @@ SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
 .PHONY: all
-all: tidy vet fmt lint test ## Run the full verification pipeline (tidy, vet, fmt, lint, test).
+all: tidy vet fmt lint fix test ## Run the full verification pipeline (tidy, vet, fmt, lint, fix, test).
 
 ##@ Development
 
@@ -30,6 +30,10 @@ lint: golangci-lint ## Run golangci-lint against the whole module.
 .PHONY: tidy
 tidy: ## Sync go.mod and go.sum with the module's imports.
 	go mod tidy
+
+.PHONY: fix
+fix: ## Modernize and update Go source code to improve code
+	go fix ./...
 
 .PHONY: test
 test: ## Run unit tests under ./pkg/... with the race detector and coverage enabled.
