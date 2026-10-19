@@ -232,8 +232,8 @@ func newPodWithPhase(name, namespace string, phase corev1.PodPhase) *unstructure
 
 func newUnschedulablePod(name, namespace string) *unstructured.Unstructured {
 	pod := newPodWithPhase(name, namespace, corev1.PodPending)
-	_ = unstructured.SetNestedSlice(pod.Object, []interface{}{
-		map[string]interface{}{
+	_ = unstructured.SetNestedSlice(pod.Object, []any{
+		map[string]any{
 			"type":   string(corev1.PodScheduled),
 			"status": string(corev1.ConditionFalse),
 			"reason": corev1.PodReasonUnschedulable,

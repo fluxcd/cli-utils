@@ -271,7 +271,7 @@ status:
 `
 
 func yamlToUnstructured(t *testing.T, yml string) *unstructured.Unstructured {
-	m := make(map[string]interface{})
+	m := make(map[string]any)
 	err := yaml.Unmarshal([]byte(yml), &m)
 	if err != nil {
 		t.Fatalf("error parsing yaml: %v", err)
@@ -950,7 +950,7 @@ func TestEventHandlerConcurrency(t *testing.T) {
 
 	pods := make([]*unstructured.Unstructured, numPods)
 	ids := make(object.ObjMetadataSet, numPods)
-	for i := 0; i < numPods; i++ {
+	for i := range numPods {
 		pod := &unstructured.Unstructured{}
 		pod.SetGroupVersionKind(v1.SchemeGroupVersion.WithKind("Pod"))
 		pod.SetNamespace("default")

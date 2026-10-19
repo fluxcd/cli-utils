@@ -472,7 +472,7 @@ func (w *ObjectStatusReporter) syncEventHandler(
 ) cache.ResourceEventHandler {
 	var handler cache.ResourceEventHandlerFuncs
 
-	handler.AddFunc = func(iobj interface{}) {
+	handler.AddFunc = func(iobj any) {
 		// Bail early if the context is cancelled, to avoid unnecessary work.
 		if ctx.Err() != nil {
 			return
@@ -521,7 +521,7 @@ func (w *ObjectStatusReporter) syncEventHandler(
 		}
 	}
 
-	handler.UpdateFunc = func(_, iobj interface{}) {
+	handler.UpdateFunc = func(_, iobj any) {
 		// Bail early if the context is cancelled, to avoid unnecessary work.
 		if ctx.Err() != nil {
 			return
@@ -570,7 +570,7 @@ func (w *ObjectStatusReporter) syncEventHandler(
 		}
 	}
 
-	handler.DeleteFunc = func(iobj interface{}) {
+	handler.DeleteFunc = func(iobj any) {
 		// Bail early if the context is cancelled, to avoid unnecessary work.
 		if ctx.Err() != nil {
 			return
@@ -630,7 +630,7 @@ func (w *ObjectStatusReporter) asyncEventHandler(
 ) cache.ResourceEventHandler {
 	var handler cache.ResourceEventHandlerFuncs
 
-	handler.AddFunc = func(iobj interface{}) {
+	handler.AddFunc = func(iobj any) {
 		if ctx.Err() != nil {
 			return
 		}
@@ -660,9 +660,7 @@ func (w *ObjectStatusReporter) asyncEventHandler(
 		latestRVs.Store(id, rv)
 		objCopy := obj.DeepCopy()
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
@@ -695,10 +693,10 @@ func (w *ObjectStatusReporter) asyncEventHandler(
 				Type:     event.ResourceUpdateEvent,
 				Resource: rs,
 			}
-		}()
+		})
 	}
 
-	handler.UpdateFunc = func(_, iobj interface{}) {
+	handler.UpdateFunc = func(_, iobj any) {
 		if ctx.Err() != nil {
 			return
 		}
@@ -728,9 +726,7 @@ func (w *ObjectStatusReporter) asyncEventHandler(
 		latestRVs.Store(id, rv)
 		objCopy := obj.DeepCopy()
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
@@ -763,10 +759,10 @@ func (w *ObjectStatusReporter) asyncEventHandler(
 				Type:     event.ResourceUpdateEvent,
 				Resource: rs,
 			}
-		}()
+		})
 	}
 
-	handler.DeleteFunc = func(iobj interface{}) {
+	handler.DeleteFunc = func(iobj any) {
 		if ctx.Err() != nil {
 			return
 		}
