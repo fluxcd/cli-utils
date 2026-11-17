@@ -33,7 +33,12 @@ tidy: ## Sync go.mod and go.sum with the module's imports.
 
 .PHONY: fix
 fix: ## Modernize and update Go source code to improve code
-	go fix ./...
+	@set -e; while :; do \
+		before=$$(git diff --no-ext-diff --no-color HEAD -- '*.go' | cksum); \
+		go fix ./...; \
+		after=$$(git diff --no-ext-diff --no-color HEAD -- '*.go' | cksum); \
+		if [ "$$before" = "$$after" ]; then break; fi; \
+	done
 
 .PHONY: test
 test: ## Run unit tests under ./pkg/... with the race detector and coverage enabled.
