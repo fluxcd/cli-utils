@@ -92,12 +92,19 @@ func (m *eventFunnel) Done() <-chan struct{} {
 }
 
 // drain a single input channel to a single output channel.
+//
+// Once the context is done, events that the output channel can't take are
+// dropped, so senders aren't blocked by a consumer that stopped reading after
+// cancelling the context. The input channel is still read until it is closed.
 func (m *eventFunnel) drain(inCh <-chan event.Event, outCh chan<- event.Event) {
 	defer func() {
 		m.counterCh <- -1 // decrement counter
 	}()
 	for event := range inCh {
-		outCh <- event
+		select {
+		case outCh <- event:
+		case <-m.ctx.Done():
+		}
 	}
 }
 
