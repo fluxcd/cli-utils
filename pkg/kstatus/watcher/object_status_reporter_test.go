@@ -131,9 +131,15 @@ func TestStopWaitsForScheduledStatusCheck(t *testing.T) {
 			timeout := time.After(10 * time.Second)
 			for {
 				select {
-				case _, ok := <-eventCh:
+				case e, ok := <-eventCh:
 					if !ok {
 						return
+					}
+					// Only the scheduled check reports Current. Its result
+					// must be dropped, because the watch was stopped.
+					if e.Type == event.ResourceUpdateEvent && e.Resource != nil {
+						require.NotEqual(t, status.CurrentStatus, e.Resource.Status,
+							"status check result sent after the watch was stopped")
 					}
 				case <-timeout:
 					t.Fatal("event channel was not closed after the status check finished")
