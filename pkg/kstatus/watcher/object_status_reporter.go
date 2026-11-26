@@ -932,15 +932,23 @@ func (w *ObjectStatusReporter) newStatusCheckTaskFunc(
 		klog.V(5).Infof("Re-reading object status: %s", id)
 		// check again
 		rs, err := w.readStatusFromCluster(ctx, id)
+		if ctx.Err() != nil {
+			// The watch stopped while the status was being read.
+			// Drop the result, so shutdown doesn't wait on the consumer.
+			return
+		}
 		if err != nil {
 			// Send error event and stop the reporter!
 			// TODO: retry N times before terminating
 			w.handleFatalError(eventCh, err)
 			return
 		}
-		eventCh <- event.Event{
+		select {
+		case eventCh <- event.Event{
 			Type:     event.ResourceUpdateEvent,
 			Resource: rs,
+		}:
+		case <-ctx.Done():
 		}
 	}
 }
@@ -1107,7 +1115,9 @@ func (tm *taskManager) Schedule(parentCtx context.Context, wg *sync.WaitGroup, i
 			// stop waiting
 			cancel()
 		case <-taskCtx.Done():
-			if taskCtx.Err() == context.DeadlineExceeded {
+			// Both contexts can be done when select runs, and select picks
+			// at random, so check the parent before running the task.
+			if taskCtx.Err() == context.DeadlineExceeded && parentCtx.Err() == nil {
 				klog.V(5).Infof("Task executing (after %v) for object (%v)", delay, id)
 				task()
 			}
